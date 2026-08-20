@@ -40,24 +40,28 @@ def analyze(values):
 
     return "\n".join(result)
 
+import os
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
-if __name__ == "__main__":
-    print("AVIATOR STATISTIK TAHLIL")
-    print("Koeffitsiyentlarni vergul bilan kiriting.")
-    print("Masalan: 1.24, 2.10, 1.05, 3.50, 5.20")
-    print()
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        values = [1.24, 2.10, 1.05, 3.50, 1.80, 2.40, 5.20]
 
-    text = input("Natijalar: ")
+        result = analyze(values)
 
-    try:
-        values = [
-            float(x.strip().replace("x", ""))
-            for x in text.split(",")
-            if x.strip()
-        ]
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.end_headers()
 
-        print()
-        print(analyze(values))
+        self.wfile.write(
+            ("AVIATOR STATISTIK TAHLIL\n\n" + result).encode("utf-8")
+        )
 
-    except ValueError:
-        print("Xato: faqat raqamli koeffitsiyent kiriting.")
+    def log_message(self, format, *args):
+        pass
+
+port = int(os.environ.get("PORT", 8080))
+
+server = HTTPServer(("0.0.0.0", port), Handler)
+print(f"Server ishga tushdi: {port}")
+server.serve_forever()
