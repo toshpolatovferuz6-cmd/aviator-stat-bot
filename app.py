@@ -6,6 +6,10 @@ import urllib.request
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+# =========================
+# SOZLAMALAR
+# =========================
+
 TOKEN = (
     os.environ.get("TELEGRAM_TOKEN")
     or os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -13,50 +17,86 @@ TOKEN = (
 )
 
 if not TOKEN:
-    raise RuntimeError("Telegram token topilmadi.")
+    raise RuntimeError("Telegram token topilmadi!")
 
 API = f"https://api.telegram.org/bot{TOKEN}"
-DATA_FILE = "results.json"
+
+# Railway Volume ulansa shu joyga saqlash mumkin.
+# Oddiy holatda ham ishlaydi.
+DATA_FILE = os.environ.get("DATA_FILE", "results.json")
 
 results = []
-offset = 0
+lock = threading.Lock()
 
+
+# =========================
+# FAYLNI SAQLASH
+# =========================
 
 def load_results():
     global results
+
     try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            results = json.load(f)
-    except:
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            if isinstance(data, list):
+                results = [float(x) for x in data]
+
+        print(f"Tarix yuklandi: {len(results)} ta natija")
+
+    except Exception as e:
+        print("Tarixni yuklash xatosi:", e)
         results = []
 
 
 def save_results():
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False)
+    try:
+        temp_file = DATA_FILE + ".tmp"
 
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(results, f, ensure_ascii=False)
+
+        os.replace(temp_file, DATA_FILE)
+
+        print(f"Tarix saqlandi: {len(results)} ta")
+
+    except Exception as e:
+        print("Saqlash xatosi:", e)
+
+
+# =========================
+# TELEGRAM
+# =========================
 
 def telegram(method, data=None):
-    try:
-        if data is None:
-            data = {}
 
-        encoded = urllib.parse.urlencode(data).encode()
+    url = f"{API}/{method}"
+
+    if data is None:
+        data = {}
+
+    encoded = urllib.parse.urlencode(data).encode()
+
+    try:
         req = urllib.request.Request(
-            f"{API}/{method}",
-            data=encoded
+            url,
+            data=encoded,
+            method="POST"
         )
 
         with urllib.request.urlopen(req, timeout=30) as response:
             return json.loads(response.read().decode())
 
     except Exception as e:
-        print("Telegram xatosi:", e)
+        print("Telegram API xatosi:", e)
         return None
 
 
 def send_message(chat_id, text):
-    telegram(
+
+    return telegram(
         "sendMessage",
         {
             "chat_id": chat_id,
@@ -65,241 +105,423 @@ def send_message(chat_id, text):
     )
 
 
-def category(x):
-    if x < 1.50:
-        return "1.00x – 1.49x"
-    elif x < 2.00:
-        return "1.50x – 1.99x"
-    elif x < 3.00:
-        return "2.00x – 2.99x"
-    elif x < 5.00:
-        return "3.00x – 4.99x"
-    else:
-        return "5.00x+"
+# =========================
+# STATISTIKA
+# =========================
 
+def get_distribution(data):
 
-def analyze(values):
-    if not values:
-        return "Ma'lumot kiritilmagan."
+    if not data:
+        return {
+            "1.00-1.49": 0,
+            "1.50-1.99": 0,
+            "2.00-2.99": 0,
+            "3.00-4.99": 0,
+            "5.00+": 0
+        }
 
-    total = len(values)
-    average = sum(values) / total
-
-    ranges = {
-        "1.00x – 1.49x": 0,
-        "1.50x – 1.99x": 0,
-        "2.00x – 2.99x": 0,
-        "3.00x – 4.99x": 0,
-        "5.00x+": 0
+    groups = {
+        "1.00-1.49": 0,
+        "1.50-1.99": 0,
+        "2.00-2.99": 0,
+        "3.00-4.99": 0,
+        "5.00+": 0
     }
 
-    for x in values:
-        ranges[category(x)] += 1
+    for x in data:
 
-    text = "📊 AVIATOR STATISTIK TAHLIL\n\n"
-    text += f"Jami raundlar: {total}\n"
-    text += f"O'rtacha koeffitsiyent: {average:.2f}x\n\n"
+        if x < 1.50:
+            groups["1.00-1.49"] += 1
 
-    text += "Tarixiy taqsimot:\n"
+        elif x < 2.00:
+            groups["1.50-1.99"] += 1
 
-    for name, count in ranges.items():
+        elif x < 3.00:
+            groups["2.00-2.99"] += 1
+
+        elif x < 5.00:
+            groups["3.00-4.99"] += 1
+
+        else:
+            groups["5.00+"] += 1
+
+    return groups
+
+
+def distribution_text(data):
+
+    groups = get_distribution(data)
+
+    total = len(data)
+
+    if total == 0:
+        return "Ma'lumot yetarli emas."
+
+    lines = []
+
+    for name, count in groups.items():
+
         percent = count / total * 100
-        text += f"{name}: {percent:.1f}%\n"
 
-    return text
-
-
-def predict():
-    if len(results) < 10:
-        return (
-            "🔮 STATISTIK SIGNAL\n\n"
-            "Bashorat uchun kamida 10 ta natija kerak.\n"
-            f"Hozir: {len(results)} ta natija.\n\n"
-            "Ko'proq natija yuboring."
+        lines.append(
+            f"{name}x: {percent:.1f}% ({count} ta)"
         )
 
-    values = results[-100:]
+    return "\n".join(lines)
 
-    ranges = {
-        "1.00x – 1.49x": 0,
-        "1.50x – 1.99x": 0,
-        "2.00x – 2.99x": 0,
-        "3.00x – 4.99x": 0,
-        "5.00x+": 0
-    }
 
-    for x in values:
-        ranges[category(x)] += 1
+# =========================
+# STAT
+# =========================
 
-    total = len(values)
+def make_stat():
 
-    probabilities = {
-        name: (count + 1) / (total + len(ranges)) * 100
-        for name, count in ranges.items()
-    }
+    with lock:
+        data = list(results)
 
-    best = max(probabilities, key=probabilities.get)
+    total = len(data)
 
-    text = "🔮 STATISTIK SIGNAL\n\n"
-    text += f"Tahlil qilingan raundlar: {total}\n\n"
+    if total == 0:
+        return "📊 Hozircha hech qanday natija yo‘q."
 
-    text += "Ehtimoliy diapazonlar:\n"
+    average = sum(data) / total
 
-    for name, probability in probabilities.items():
-        text += f"{name}: {probability:.1f}%\n"
+    last10 = data[-10:]
+    last20 = data[-20:]
+    last50 = data[-50:]
 
-    text += "\n"
-    text += f"📌 Tarix bo'yicha eng yuqori ulush: {best}\n\n"
+    text = "📊 AVIATOR STATISTIK TAHLIL\n\n"
 
-    recent = results[-10:]
-    recent_avg = sum(recent) / len(recent)
+    text += f"Jami raundlar: {total}\n"
+    text += f"O‘rtacha koeffitsiyent: {average:.2f}x\n\n"
 
-    text += f"Oxirgi 10 raund o'rtachasi: {recent_avg:.2f}x\n\n"
+    text += "📈 Barcha tarix:\n"
+    text += distribution_text(data)
+
+    if last10:
+        avg10 = sum(last10) / len(last10)
+
+        text += "\n\n🔹 Oxirgi 10 raund:\n"
+        text += f"O‘rtacha: {avg10:.2f}x\n"
+        text += distribution_text(last10)
+
+    if last20:
+        avg20 = sum(last20) / len(last20)
+
+        text += "\n\n🔹 Oxirgi 20 raund:\n"
+        text += f"O‘rtacha: {avg20:.2f}x\n"
+        text += distribution_text(last20)
+
+    if last50:
+        avg50 = sum(last50) / len(last50)
+
+        text += "\n\n🔹 Oxirgi 50 raund:\n"
+        text += f"O‘rtacha: {avg50:.2f}x\n"
+        text += distribution_text(last50)
 
     text += (
-        "⚠️ Bu faqat statistik hisob-kitob.\n"
+        "\n\n⚠️ Bu faqat tarixiy statistika. "
         "Keyingi raund natijasini kafolatlamaydi."
     )
 
     return text
 
 
-def handle_message(message):
-    if "chat" not in message:
+# =========================
+# PREDICT
+# =========================
+
+def make_predict():
+
+    with lock:
+        data = list(results)
+
+    total = len(data)
+
+    if total < 10:
+        return (
+            "🔮 Statistik tahlil uchun kamida 10 ta "
+            "natija kerak.\n\n"
+            f"Hozir: {total} ta"
+        )
+
+    # Oxirgi 50 ta yoki mavjud bo'lgan hammasi
+    sample = data[-50:]
+
+    groups = get_distribution(sample)
+
+    total_sample = len(sample)
+
+    percentages = {}
+
+    for name, count in groups.items():
+        percentages[name] = count / total_sample * 100
+
+    # Eng yuqori tarixiy ulush
+    best = max(percentages, key=percentages.get)
+
+    avg = sum(sample) / len(sample)
+
+    text = "🔮 STATISTIK EHTIMOLIY TAHLIL\n\n"
+
+    text += f"Tahlil qilingan raundlar: {total_sample}\n"
+    text += f"Oxirgi {total_sample} raund o‘rtachasi: {avg:.2f}x\n\n"
+
+    text += "Ehtimoliy diapazonlar:\n"
+
+    for name, percent in percentages.items():
+
+        text += f"{name}x — {percent:.1f}%\n"
+
+    text += (
+        f"\n📌 Tarixiy ulushi eng yuqori diapazon:\n"
+        f"{best}x\n"
+    )
+
+    text += (
+        "\n⚠️ Bu bashorat emas, faqat statistik hisob. "
+        "Aviatorning keyingi natijasi oldingi raundlardan "
+        "ishonchli tarzda aniqlanmaydi."
+    )
+
+    return text
+
+
+# =========================
+# ADD
+# =========================
+
+def add_results(numbers):
+
+    added = 0
+
+    with lock:
+
+        for number in numbers:
+
+            try:
+                value = float(number)
+
+                if value >= 1.00:
+                    results.append(value)
+                    added += 1
+
+            except:
+                pass
+
+        if added > 0:
+            save_results()
+
+    return added
+
+
+# =========================
+# CLEAR
+# =========================
+
+def clear_results():
+
+    global results
+
+    with lock:
+
+        results = []
+        save_results()
+
+    return True
+
+
+# =========================
+# HELP
+# =========================
+
+def help_text():
+
+    return (
+        "👋 Aviator Stat Bot ishlayapti!\n\n"
+
+        "📥 Natija qo‘shish:\n"
+        "/add 1.24 2.10 1.05 3.50\n\n"
+
+        "📊 Statistikani ko‘rish:\n"
+        "/stat\n\n"
+
+        "🔮 Statistik ehtimolni ko‘rish:\n"
+        "/predict\n\n"
+
+        "🗑 Tarixni tozalash:\n"
+        "/clear\n\n"
+
+        "📚 Bot yuborgan barcha natijalarni "
+        "eski tarixga qo‘shib boradi."
+    )
+
+
+# =========================
+# COMMAND
+# =========================
+
+def process_message(message):
+
+    if "text" not in message:
         return
 
     chat_id = message["chat"]["id"]
-    text = message.get("text", "").strip()
+    text = message["text"].strip()
 
     if text.startswith("/start"):
+
         send_message(
             chat_id,
-            "👋 Aviator Stat Bot ishga tushdi!\n\n"
-            "📥 Natija qo'shish:\n"
-            "/add 1.24 2.10 1.05 3.50\n\n"
-            "📊 Statistikani ko'rish:\n"
-            "/stat\n\n"
-            "🔮 Statistik signal:\n"
-            "/predict\n\n"
-            "🗑 Natijalarni tozalash:\n"
-            "/clear"
+            help_text()
+        )
+
+    elif text.startswith("/help"):
+
+        send_message(
+            chat_id,
+            help_text()
         )
 
     elif text.startswith("/add"):
-        try:
-            parts = text.split()[1:]
 
-            if not parts:
-                send_message(
-                    chat_id,
-                    "Masalan:\n/add 1.24 2.10 1.05 3.50"
-                )
-                return
+        parts = text.split()[1:]
 
-            new_values = []
-
-            for p in parts:
-                x = float(p.replace(",", "."))
-
-                if x < 1.00:
-                    continue
-
-                new_values.append(x)
-
-            if not new_values:
-                send_message(chat_id, "To'g'ri koeffitsiyent kiriting.")
-                return
-
-            results.extend(new_values)
-            save_results()
+        if not parts:
 
             send_message(
                 chat_id,
-                f"✅ {len(new_values)} ta natija qo'shildi.\n\n"
-                + analyze(new_values)
+                "❗ Masalan:\n/add 1.24 2.10 1.05 3.50"
             )
 
-        except Exception:
-            send_message(
-                chat_id,
-                "❌ Format xato.\n\n"
-                "Masalan:\n"
-                "/add 1.24 2.10 1.05 3.50"
-            )
+            return
 
-    elif text.startswith("/stat"):
-        send_message(chat_id, analyze(results))
+        added = add_results(parts)
 
-    elif text.startswith("/predict"):
-        send_message(chat_id, predict())
-
-    elif text.startswith("/clear"):
-        results.clear()
-        save_results()
+        with lock:
+            total = len(results)
 
         send_message(
             chat_id,
-            "🗑 Barcha statistik natijalar tozalandi."
+            f"✅ {added} ta natija qo‘shildi.\n\n"
+            f"📚 Jami tarix: {total} ta"
+        )
+
+    elif text.startswith("/stat"):
+
+        send_message(
+            chat_id,
+            make_stat()
+        )
+
+    elif text.startswith("/predict"):
+
+        send_message(
+            chat_id,
+            make_predict()
+        )
+
+    elif text.startswith("/clear"):
+
+        clear_results()
+
+        send_message(
+            chat_id,
+            "🗑 Barcha tarix tozalandi.\n"
+            "Jami natija: 0 ta"
+        )
+
+    else:
+
+        send_message(
+            chat_id,
+            "❓ Buyruqni tushunmadim.\n\n"
+            " /start — yordam\n"
+            " /add — natija qo‘shish\n"
+            " /stat — statistika\n"
+            " /predict — statistik ehtimol\n"
+            " /clear — tarixni tozalash"
         )
 
 
-def bot_loop():
-    global offset
+# =========================
+# BOT LOOP
+# =========================
 
-    telegram("deleteWebhook", {"drop_pending_updates": "true"})
+def bot_loop():
+
+    offset = None
+
+    print("🤖 Bot ishga tushdi!")
 
     while True:
+
         try:
+
+            data = {
+                "timeout": 25
+            }
+
+            if offset is not None:
+                data["offset"] = offset
+
             response = telegram(
                 "getUpdates",
-                {
-                    "timeout": 25,
-                    "offset": offset
-                }
+                data
             )
 
-            if not response or not response.get("ok"):
-                time.sleep(3)
-                continue
+            if response and response.get("ok"):
 
-            updates = response.get("result", [])
+                updates = response.get("result", [])
 
-            for update in updates:
-                offset = update["update_id"] + 1
+                for update in updates:
 
-                message = update.get("message")
+                    offset = update["update_id"] + 1
 
-                if message:
-                    handle_message(message)
+                    if "message" in update:
+                        process_message(
+                            update["message"]
+                        )
 
         except Exception as e:
-            print("Bot loop xatosi:", e)
-            time.sleep(5)
 
+            print("Bot loop xatosi:", e)
+            time.sleep(3)
+
+
+# =========================
+# RAILWAY WEB SERVER
+# =========================
 
 class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
-        body = (
-            "Aviator Stat Bot ishlayapti!\n\n"
-            f"Jami saqlangan natijalar: {len(results)}"
-        ).encode("utf-8")
+
+        body = b"Aviator Stat Bot OK"
 
         self.send_response(200)
+
         self.send_header(
             "Content-Type",
             "text/plain; charset=utf-8"
         )
+
         self.send_header(
             "Content-Length",
             str(len(body))
         )
+
         self.end_headers()
+
         self.wfile.write(body)
 
     def log_message(self, format, *args):
         pass
 
+
+# =========================
+# START
+# =========================
 
 load_results()
 
@@ -308,7 +530,9 @@ threading.Thread(
     daemon=True
 ).start()
 
-port = int(os.environ.get("PORT", 8080))
+port = int(
+    os.environ.get("PORT", 8080)
+)
 
 server = HTTPServer(
     ("0.0.0.0", port),
