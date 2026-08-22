@@ -373,7 +373,7 @@ def make_predict():
 
     # Oxirgi 100 ta yoki mavjud barcha natija
 
-    sample = data[-100:]
+    sample = data
 
     sample_sorted = sorted(
         sample
