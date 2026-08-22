@@ -402,16 +402,22 @@ def process_message(message):
 
             return
 
-        added = add_results(parts)
+    added = add_results(parts)
 
-        with lock:
-            total = len(results)
+with lock:
+    total = len(results)
 
-        send_message(
-            chat_id,
-            f"✅ {added} ta natija qo‘shildi.\n\n"
-            f"📚 Jami tarix: {total} ta"
-        )
+send_message(
+    chat_id,
+    f"✅ {added} ta natija qo‘shildi\n"
+    f"📚 Jami tarix: {total}"
+)
+
+# Natija qo‘shilgandan keyin avtomatik keyingi signal
+send_message(
+    chat_id,
+    make_predict()
+)
 
     elif text.startswith("/stat"):
 
