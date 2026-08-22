@@ -232,7 +232,6 @@ def make_stat():
 # =========================
 
 def make_predict():
-
     with lock:
         data = list(results)
 
@@ -240,48 +239,55 @@ def make_predict():
 
     if total < 10:
         return (
-            "🔮 Statistik tahlil uchun kamida 10 ta "
-            "natija kerak.\n\n"
-            f"Hozir: {total} ta"
+            "🔮 <b>STATISTIK TAHLIL</b>\n\n"
+            f"📊 Hozir tarixda: <b>{total} ta</b>\n"
+            "Kamida 10 ta natija kerak."
         )
 
-    # Oxirgi 50 ta yoki mavjud bo'lgan hammasi
-    sample = data[-50:]
+    # Oxirgi 100 ta yoki mavjud barcha natija
+    sample = data[-100:]
+    sample_sorted = sorted(sample)
 
+    n = len(sample_sorted)
+
+    # Statistik chegaralar
+    low_index = int((n - 1) * 0.20)
+    high_index = int((n - 1) * 0.80)
+
+    low = sample_sorted[low_index]
+    high = sample_sorted[high_index]
+
+    # Pastki chegarani 0.1x ko'rinishida yaxlitlash
+    low = round(low, 1)
+    high = round(high, 1)
+
+    # Eng ko'p uchragan diapazon
     groups = get_distribution(sample)
 
-    total_sample = len(sample)
+    best = max(groups, key=groups.get)
+    best_count = groups[best]
+    best_percent = best_count / n * 100
 
-    percentages = {}
+    avg = sum(sample) / n
 
-    for name, count in groups.items():
-        percentages[name] = count / total_sample * 100
+    text = (
+        "🔮 <b>KEYINGI RAUND UCHUN STATISTIK TAHLIL</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
 
-    # Eng yuqori tarixiy ulush
-    best = max(percentages, key=percentages.get)
+        f"📊 Tahlil qilingan tarix: <b>{n} ta</b>\n"
+        f"📈 O‘rtacha koeffitsiyent: <b>{avg:.2f}x</b>\n\n"
 
-    avg = sum(sample) / len(sample)
+        "🎯 <b>Eng ehtimoliy diapazon:</b>\n"
+        f"<b>{low:.1f}x — {high:.1f}x</b>\n\n"
 
-    text = "🔮 STATISTIK EHTIMOLIY TAHLIL\n\n"
+        f"⬇️ <b>Eng past chegara: {low:.1f}x</b>\n"
+        f"⬆️ <b>Yuqori chegara: {high:.1f}x</b>\n\n"
 
-    text += f"Tahlil qilingan raundlar: {total_sample}\n"
-    text += f"Oxirgi {total_sample} raund o‘rtachasi: {avg:.2f}x\n\n"
+        f"📌 Eng ko‘p uchragan diapazon:\n"
+        f"<b>{best}</b> — <b>{best_percent:.1f}%</b>\n\n"
 
-    text += "Ehtimoliy diapazonlar:\n"
-
-    for name, percent in percentages.items():
-
-        text += f"{name}x — {percent:.1f}%\n"
-
-    text += (
-        f"\n📌 Tarixiy ulushi eng yuqori diapazon:\n"
-        f"{best}x\n"
-    )
-
-    text += (
-        "\n⚠️ Bu bashorat emas, faqat statistik hisob. "
-        "Aviatorning keyingi natijasi oldingi raundlardan "
-        "ishonchli tarzda aniqlanmaydi."
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 <b>Signal: {low:.1f}x dan boshlanadi</b>"
     )
 
     return text
