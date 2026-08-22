@@ -404,16 +404,16 @@ def process_message(message):
 
     added = add_results(parts)
 
-with lock:
+    with lock:
     total = len(results)
 
-send_message(
+    send_message(
     chat_id,
     f"✅ {added} ta natija qo‘shildi\n"
     f"📚 Jami tarix: {total}"
 )
 
-# Natija qo‘shilgandan keyin avtomatik keyingi signal
+    # Natija qo‘shilgandan keyin avtomatik keyingi signal
 send_message(
     chat_id,
     make_predict()
