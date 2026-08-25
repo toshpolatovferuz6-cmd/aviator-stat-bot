@@ -1,18 +1,7 @@
-import os
-import json
-import time
-import math
-import random
-import threading
-import urllib.request
-import urllib.parse
-from collections import Counter
+import os, json, time, threading, urllib.request, urllib.parse
+from collections import Counter, defaultdict
 from http.server import BaseHTTPRequestHandler, HTTPServer
-
-
-# =========================================================
-# SOZLAMALAR
-# =========================================================
+import math
 
 TOKEN = (
     os.environ.get("TELEGRAM_TOKEN")
@@ -24,7 +13,6 @@ if not TOKEN:
     raise RuntimeError("Telegram token topilmadi!")
 
 API = f"https://api.telegram.org/bot{TOKEN}"
-
 DATA_FILE = os.environ.get("DATA_FILE", "results.json")
 
 results = []
@@ -32,117 +20,10 @@ lock = threading.Lock()
 
 
 # =========================================================
-# FAYL SAQLASH / YUKLASH
-# =========================================================
-
-def load_results():
-    global results
-
-    try:
-        if os.path.exists(DATA_FILE):
-
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            if isinstance(data, list):
-
-                cleaned = []
-
-                for x in data:
-                    try:
-                        value = float(x)
-
-                        if value >= 1.0:
-                            cleaned.append(value)
-
-                    except Exception:
-                        pass
-
-                results = cleaned
-
-        print(f"Tarix yuklandi: {len(results)} ta")
-
-    except Exception as e:
-
-        print("Tarixni yuklash xatosi:", e)
-        results = []
-
-
-def save_results():
-
-    try:
-
-        temp_file = DATA_FILE + ".tmp"
-
-        with open(temp_file, "w", encoding="utf-8") as f:
-            json.dump(
-                results,
-                f,
-                ensure_ascii=False
-            )
-
-        os.replace(temp_file, DATA_FILE)
-
-        print(f"Tarix saqlandi: {len(results)} ta")
-
-    except Exception as e:
-
-        print("Saqlash xatosi:", e)
-
-
-# =========================================================
-# TELEGRAM API
-# =========================================================
-
-def telegram(method, data=None):
-
-    url = f"{API}/{method}"
-
-    if data is None:
-        data = {}
-
-    encoded = urllib.parse.urlencode(data).encode()
-
-    try:
-
-        req = urllib.request.Request(
-            url,
-            data=encoded,
-            method="POST"
-        )
-
-        with urllib.request.urlopen(
-            req,
-            timeout=30
-        ) as response:
-
-            return json.loads(
-                response.read().decode()
-            )
-
-    except Exception as e:
-
-        print("Telegram API xatosi:", e)
-        return None
-
-
-def send_message(chat_id, text):
-
-    return telegram(
-        "sendMessage",
-        {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML"
-        }
-    )
-
-
-# =========================================================
 # DIAPAZONLAR
 # =========================================================
 
-RANGES = [
+BINS = [
     ("1.00-1.19", 1.00, 1.20),
     ("1.20-1.49", 1.20, 1.50),
     ("1.50-1.99", 1.50, 2.00),
@@ -158,9 +39,118 @@ RANGES = [
 ]
 
 
-def get_range_name(value):
+# =========================================================
+# SAQLASH
+# =========================================================
 
-    for name, low, high in RANGES:
+def load_results():
+    global results
+
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+
+        results = []
+
+        for x in raw:
+            try:
+                value = float(x)
+
+                if value >= 1.00:
+                    results.append(value)
+
+            except Exception:
+                pass
+
+        print("Tarix yuklandi:", len(results))
+
+    except Exception:
+        results = []
+
+        print("Yangi tarix yaratildi.")
+
+
+def save_results():
+
+    temp = DATA_FILE + ".tmp"
+
+    with open(
+        temp,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            results,
+            f,
+            ensure_ascii=False
+        )
+
+    os.replace(
+        temp,
+        DATA_FILE
+    )
+
+
+# =========================================================
+# TELEGRAM
+# =========================================================
+
+def telegram(method, data=None):
+
+    try:
+
+        body = urllib.parse.urlencode(
+            data or {}
+        ).encode()
+
+        request = urllib.request.Request(
+            f"{API}/{method}",
+            data=body,
+            method="POST"
+        )
+
+        with urllib.request.urlopen(
+            request,
+            timeout=35
+        ) as response:
+
+            return json.loads(
+                response.read().decode()
+            )
+
+    except Exception as e:
+
+        print(
+            "Telegram xatosi:",
+            e
+        )
+
+        return None
+
+
+def send_message(
+    chat_id,
+    text
+):
+
+    return telegram(
+        "sendMessage",
+        {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML"
+        }
+    )
+
+
+# =========================================================
+# DIAPAZON
+# =========================================================
+
+def bin_name(value):
+
+    for name, low, high in BINS:
 
         if low <= value < high:
             return name
@@ -168,275 +158,74 @@ def get_range_name(value):
     return "100.00+"
 
 
-def get_distribution(data):
+def counts(data):
 
-    counter = Counter()
-
-    for value in data:
-        counter[get_range_name(value)] += 1
-
-    return counter
+    return Counter(
+        bin_name(x)
+        for x in data
+    )
 
 
-def distribution_text(data):
+def distribution(data):
 
     if not data:
-        return "Ma'lumot yo‘q."
+        return {}
 
-    counter = get_distribution(data)
+    counter = counts(data)
 
     total = len(data)
 
-    lines = []
+    return {
+        name:
+        counter.get(name, 0)
+        / total
+        * 100
 
-    for name, low, high in RANGES:
-
-        count = counter.get(name, 0)
-
-        percent = count / total * 100
-
-        lines.append(
-            f"• {name}x — {percent:.2f}% ({count} ta)"
-        )
-
-    return "\n".join(lines)
+        for name, _, _ in BINS
+    }
 
 
 # =========================================================
 # PERCENTILE
 # =========================================================
 
-def percentile(data, p):
+def percentile(
+    data,
+    p
+):
 
     if not data:
         return 0.0
 
     values = sorted(data)
 
-    if len(values) == 1:
-        return values[0]
+    position = (
+        len(values) - 1
+    ) * p
 
-    index = (len(values) - 1) * p
+    lower = int(
+        math.floor(position)
+    )
 
-    lower = int(math.floor(index))
-    upper = int(math.ceil(index))
+    upper = int(
+        math.ceil(position)
+    )
 
     if lower == upper:
         return values[lower]
 
-    weight = index - lower
+    weight = position - lower
 
     return (
-        values[lower] * (1 - weight)
-        + values[upper] * weight
+        values[lower]
+        +
+        (
+            values[upper]
+            -
+            values[lower]
+        )
+        * weight
     )
-
-
-# =========================================================
-# ENTROPY
-# =========================================================
-
-def entropy(data):
-
-    if not data:
-        return 0.0
-
-    counter = get_distribution(data)
-
-    total = len(data)
-
-    result = 0.0
-
-    for count in counter.values():
-
-        if count <= 0:
-            continue
-
-        p = count / total
-
-        result -= p * math.log2(p)
-
-    return result
-
-
-# =========================================================
-# AUTOCORRELATION
-# =========================================================
-
-def autocorrelation(data, lag=1):
-
-    n = len(data)
-
-    if n <= lag + 1:
-        return 0.0
-
-    x = data
-
-    mean = sum(x) / n
-
-    numerator = 0.0
-    denominator = 0.0
-
-    for i in range(lag, n):
-
-        numerator += (
-            (x[i] - mean)
-            * (x[i - lag] - mean)
-        )
-
-    for value in x:
-
-        denominator += (
-            (value - mean) ** 2
-        )
-
-    if denominator == 0:
-        return 0.0
-
-    return numerator / denominator
-
-
-# =========================================================
-# STREAK
-# =========================================================
-
-def current_low_streak(data, threshold=1.50):
-
-    count = 0
-
-    for value in reversed(data):
-
-        if value < threshold:
-            count += 1
-        else:
-            break
-
-    return count
-
-
-def current_high_streak(data, threshold=5.00):
-
-    count = 0
-
-    for value in reversed(data):
-
-        if value >= threshold:
-            count += 1
-        else:
-            break
-
-    return count
-
-
-# =========================================================
-# OXSHASH KETMA-KETLIKLAR
-# =========================================================
-
-def transition_analysis(data):
-
-    if len(data) < 2:
-        return None
-
-    transitions = {}
-
-    for i in range(len(data) - 1):
-
-        a = get_range_name(data[i])
-        b = get_range_name(data[i + 1])
-
-        if a not in transitions:
-            transitions[a] = Counter()
-
-        transitions[a][b] += 1
-
-    current = get_range_name(data[-1])
-
-    if current not in transitions:
-        return None
-
-    counter = transitions[current]
-
-    total = sum(counter.values())
-
-    if total == 0:
-        return None
-
-    best_range, best_count = counter.most_common(1)[0]
-
-    percent = best_count / total * 100
-
-    return (
-        current,
-        best_range,
-        percent,
-        total
-    )
-
-
-# =========================================================
-# CHI-SQUAREGA O‘XSHASH TEST
-# =========================================================
-
-def distribution_uniformity(data):
-
-    if len(data) < 10:
-        return 0.0
-
-    counter = get_distribution(data)
-
-    categories = len(RANGES)
-
-    expected = len(data) / categories
-
-    if expected == 0:
-        return 0.0
-
-    chi = 0.0
-
-    for name, _, _ in RANGES:
-
-        observed = counter.get(name, 0)
-
-        chi += (
-            (observed - expected) ** 2
-            / expected
-        )
-
-    return chi
-
-
-# =========================================================
-# TREND
-# =========================================================
-
-def trend_slope(data):
-
-    n = len(data)
-
-    if n < 2:
-        return 0.0
-
-    x_mean = (n - 1) / 2
-    y_mean = sum(data) / n
-
-    numerator = 0.0
-    denominator = 0.0
-
-    for i, value in enumerate(data):
-
-        numerator += (
-            (i - x_mean)
-            * (value - y_mean)
-        )
-
-        denominator += (
-            (i - x_mean) ** 2
-        )
-
-    if denominator == 0:
-        return 0.0
-
-    return numerator / denominator
 
 
 # =========================================================
@@ -450,48 +239,359 @@ def calculate_stats(data):
     if n == 0:
         return None
 
-    average = sum(data) / n
-
-    minimum = min(data)
-    maximum = max(data)
-
-    median = percentile(data, 0.50)
-
-    q1 = percentile(data, 0.25)
-    q3 = percentile(data, 0.75)
-
-    p10 = percentile(data, 0.10)
-    p90 = percentile(data, 0.90)
+    average = (
+        sum(data) / n
+    )
 
     variance = sum(
         (x - average) ** 2
         for x in data
     ) / n
 
-    std = math.sqrt(variance)
-
-    cv = 0.0
-
-    if average != 0:
-        cv = std / average * 100
-
     return {
         "n": n,
         "average": average,
-        "minimum": minimum,
-        "maximum": maximum,
-        "median": median,
-        "q1": q1,
-        "q3": q3,
-        "p10": p10,
-        "p90": p90,
-        "std": std,
-        "cv": cv
+        "median": percentile(data, 0.50),
+        "q1": percentile(data, 0.25),
+        "q3": percentile(data, 0.75),
+        "p10": percentile(data, 0.10),
+        "p90": percentile(data, 0.90),
+        "std": math.sqrt(variance),
+        "minimum": min(data),
+        "maximum": max(data)
     }
 
 
 # =========================================================
-# ROLLING TAHLIL
+# ENTROPY
+# =========================================================
+
+def entropy(data):
+
+    if not data:
+        return 0.0
+
+    counter = counts(data)
+
+    total = len(data)
+
+    result = 0.0
+
+    for count in counter.values():
+
+        if count <= 0:
+            continue
+
+        p = count / total
+
+        result -= (
+            p * math.log2(p)
+        )
+
+    return result
+
+
+# =========================================================
+# AUTOCORRELATION
+# =========================================================
+
+def autocorrelation(
+    data,
+    lag
+):
+
+    n = len(data)
+
+    if n <= lag + 1:
+        return 0.0
+
+    average = sum(data) / n
+
+    denominator = sum(
+        (x - average) ** 2
+        for x in data
+    )
+
+    if denominator == 0:
+        return 0.0
+
+    numerator = sum(
+        (data[i] - average)
+        *
+        (data[i - lag] - average)
+
+        for i in range(
+            lag,
+            n
+        )
+    )
+
+    return (
+        numerator
+        /
+        denominator
+    )
+
+
+# =========================================================
+# STREAK
+# =========================================================
+
+def streak(
+    data,
+    threshold,
+    below=True
+):
+
+    total = 0
+
+    for value in reversed(data):
+
+        condition = (
+            value < threshold
+        )
+
+        if condition == below:
+            total += 1
+        else:
+            break
+
+    return total
+
+
+# =========================================================
+# TRANSITION
+# =========================================================
+
+def transition_analysis(data):
+
+    if len(data) < 2:
+        return None
+
+    transitions = defaultdict(
+        Counter
+    )
+
+    for a, b in zip(
+        data,
+        data[1:]
+    ):
+
+        transitions[
+            bin_name(a)
+        ][
+            bin_name(b)
+        ] += 1
+
+    current = bin_name(
+        data[-1]
+    )
+
+    counter = transitions[
+        current
+    ]
+
+    if not counter:
+        return None
+
+    name, number = (
+        counter.most_common(1)[0]
+    )
+
+    total = sum(
+        counter.values()
+    )
+
+    return (
+        current,
+        name,
+        number / total * 100,
+        total
+    )
+
+
+# =========================================================
+# O‘XSHASH PATTERN
+# =========================================================
+
+def similarity_analysis(
+    data,
+    length=5
+):
+
+    if len(data) < length + 2:
+        return None
+
+    target = [
+        bin_name(x)
+        for x in data[-length:]
+    ]
+
+    matches = []
+
+    for i in range(
+        length,
+        len(data) - 1
+    ):
+
+        pattern = [
+            bin_name(x)
+            for x in data[
+                i - length:i
+            ]
+        ]
+
+        if pattern == target:
+
+            matches.append(
+                data[i]
+            )
+
+    if not matches:
+        return None
+
+    counter = counts(matches)
+
+    name, number = (
+        counter.most_common(1)[0]
+    )
+
+    percent = (
+        number
+        /
+        len(matches)
+        *
+        100
+    )
+
+    return (
+        name,
+        percent,
+        len(matches)
+    )
+
+
+# =========================================================
+# TREND
+# =========================================================
+
+def trend_slope(data):
+
+    n = len(data)
+
+    if n < 2:
+        return 0.0
+
+    x_mean = (
+        n - 1
+    ) / 2
+
+    y_mean = (
+        sum(data) / n
+    )
+
+    denominator = sum(
+        (i - x_mean) ** 2
+        for i in range(n)
+    )
+
+    if denominator == 0:
+        return 0.0
+
+    numerator = sum(
+        (i - x_mean)
+        *
+        (value - y_mean)
+
+        for i, value
+        in enumerate(data)
+    )
+
+    return (
+        numerator
+        /
+        denominator
+    )
+
+
+# =========================================================
+# RUNS TEST
+# =========================================================
+
+def runs_test(data):
+
+    if len(data) < 20:
+        return None
+
+    binary = [
+        value < 2.0
+        for value in data
+    ]
+
+    n1 = sum(binary)
+    n2 = len(binary) - n1
+
+    if n1 == 0 or n2 == 0:
+        return None
+
+    runs = 1
+
+    for i in range(
+        1,
+        len(binary)
+    ):
+
+        if binary[i] != binary[i - 1]:
+            runs += 1
+
+    expected = (
+        1
+        +
+        (
+            2
+            *
+            n1
+            *
+            n2
+            /
+            (n1 + n2)
+        )
+    )
+
+    variance = (
+        2
+        *
+        n1
+        *
+        n2
+        *
+        (
+            2 * n1 * n2
+            -
+            n1
+            -
+            n2
+        )
+        /
+        (
+            (n1 + n2) ** 2
+            *
+            (n1 + n2 - 1)
+        )
+    )
+
+    if variance <= 0:
+        return 0.0
+
+    return (
+        runs - expected
+    ) / math.sqrt(
+        variance
+    )
+
+
+# =========================================================
+# ROLLING
 # =========================================================
 
 def rolling_analysis(data):
@@ -515,9 +615,16 @@ def rolling_analysis(data):
 
         part = data[-window:]
 
-        avg = sum(part) / len(part)
+        average = (
+            sum(part)
+            /
+            len(part)
+        )
 
-        med = percentile(part, 0.50)
+        median = percentile(
+            part,
+            0.50
+        )
 
         low = sum(
             1
@@ -526,69 +633,173 @@ def rolling_analysis(data):
         )
 
         low_percent = (
-            low / len(part) * 100
+            low
+            /
+            len(part)
+            *
+            100
         )
 
         lines.append(
             f"• {window} raund: "
-            f"avg {avg:.2f}x | "
-            f"median {med:.2f}x | "
+            f"avg {average:.2f}x | "
+            f"median {median:.2f}x | "
             f"<1.50x {low_percent:.1f}%"
         )
 
     if not lines:
         return "Yetarli ma'lumot yo‘q."
 
-    return "\n".join(lines)
+    return "\n".join(
+        lines
+    )
 
 
 # =========================================================
-# BOOTSTRAP ISHONCH ORALIG‘I
+# WALK-FORWARD BACKTEST
 # =========================================================
 
-def bootstrap_mean(data, iterations=200):
+def backtest(
+    data,
+    window=100
+):
 
-    n = len(data)
+    if len(data) < (
+        window + 20
+    ):
 
-    if n < 20:
         return None
 
-    rng = random.Random(42)
+    correct = 0
+    total = 0
 
-    means = []
+    for i in range(
+        window,
+        len(data)
+    ):
 
-    # Juda katta tarixda hisoblashni yengil qilish
-    sample_size = min(n, 1000)
+        history = data[
+            i - window:i
+        ]
 
-    for _ in range(iterations):
-
-        total = 0.0
-
-        for _ in range(sample_size):
-
-            total += data[
-                rng.randrange(n)
-            ]
-
-        means.append(
-            total / sample_size
+        counter = counts(
+            history
         )
 
-    means.sort()
+        predicted = (
+            counter
+            .most_common(1)[0][0]
+        )
 
-    low = means[
-        int(len(means) * 0.025)
-    ]
+        actual = bin_name(
+            data[i]
+        )
 
-    high = means[
-        int(len(means) * 0.975)
-    ]
+        if predicted == actual:
+            correct += 1
 
-    return low, high
+        total += 1
+
+    if total == 0:
+        return None
+
+    return (
+        correct
+        /
+        total
+        *
+        100
+    )
 
 
 # =========================================================
-# CHUQUR PREDICT
+# MODEL VOTES
+# =========================================================
+
+def model_votes(data):
+
+    votes = Counter()
+
+    # 1. Umumiy tarix
+    overall = distribution(
+        data
+    )
+
+    for name, percent in (
+        overall.items()
+    ):
+
+        votes[name] += percent
+
+    # 2. Yaqin tarixga vazn
+    windows = [
+        (25, 2.5),
+        (50, 2.0),
+        (100, 1.5),
+        (250, 1.0),
+        (500, 0.7),
+        (1000, 0.5)
+    ]
+
+    for window, weight in windows:
+
+        if len(data) < window:
+            continue
+
+        recent = data[-window:]
+
+        dist = distribution(
+            recent
+        )
+
+        for name, percent in (
+            dist.items()
+        ):
+
+            votes[name] += (
+                percent
+                *
+                weight
+            )
+
+    # 3. Transition
+    transition = (
+        transition_analysis(data)
+    )
+
+    if transition:
+
+        _, name, percent, _ = (
+            transition
+        )
+
+        votes[name] += (
+            percent * 2
+        )
+
+    # 4. Similarity
+    similarity = (
+        similarity_analysis(
+            data,
+            5
+        )
+    )
+
+    if similarity:
+
+        name, percent, _ = (
+            similarity
+        )
+
+        votes[name] += (
+            percent * 3
+        )
+
+    return votes
+
+
+# =========================================================
+# YAKUNIY PREDICT
 # =========================================================
 
 def make_predict():
@@ -601,224 +812,260 @@ def make_predict():
     if total < 10:
 
         return (
-            "🔮 <b>CHUQUR STATISTIK TAHLIL</b>\n\n"
-            f"📊 Hozir tarixda: <b>{total} ta</b>\n\n"
-            "Kamida <b>10 ta</b> natija kerak."
+            "🔮 <b>CHUQUR TAHLIL</b>\n\n"
+            f"📊 Hozir: <b>{total}</b> ta\n"
+            f"❗ Yana "
+            f"<b>{10-total}</b> ta "
+            "natija kerak."
         )
 
-    stats = calculate_stats(data)
-
-    average = stats["average"]
-    median = stats["median"]
-
-    q1 = stats["q1"]
-    q3 = stats["q3"]
-
-    p10 = stats["p10"]
-    p90 = stats["p90"]
-
-    std = stats["std"]
-    cv = stats["cv"]
-
-    # -----------------------------------------------------
-    # ENG KO‘P UCHRAYDIGAN DIAPAZON
-    # -----------------------------------------------------
-
-    distribution = get_distribution(data)
-
-    best_range, best_count = (
-        distribution.most_common(1)[0]
-    )
-
-    best_percent = (
-        best_count / total * 100
-    )
-
-    # -----------------------------------------------------
-    # STREAK
-    # -----------------------------------------------------
-
-    low_streak = current_low_streak(
-        data,
-        1.50
-    )
-
-    high_streak = current_high_streak(
-        data,
-        5.00
-    )
-
-    # -----------------------------------------------------
-    # AUTOCORRELATION
-    # -----------------------------------------------------
-
-    ac1 = autocorrelation(
-        data,
-        1
-    )
-
-    ac2 = autocorrelation(
-        data,
-        2
-    )
-
-    ac3 = autocorrelation(
-        data,
-        3
-    )
-
-    # -----------------------------------------------------
-    # TREND
-    # -----------------------------------------------------
-
-    slope = trend_slope(data)
-
-    # -----------------------------------------------------
-    # ENTROPY
-    # -----------------------------------------------------
-
-    ent = entropy(data)
-
-    # -----------------------------------------------------
-    # CHI-SQUARE
-    # -----------------------------------------------------
-
-    chi = distribution_uniformity(
+    stats = calculate_stats(
         data
     )
 
-    # -----------------------------------------------------
-    # OXSHASH KETMA-KETLIK
-    # -----------------------------------------------------
-
-    transition = transition_analysis(
+    votes = model_votes(
         data
     )
 
-    # -----------------------------------------------------
-    # BOOTSTRAP
-    # -----------------------------------------------------
+    ranked = (
+        votes.most_common()
+    )
 
-    bootstrap = bootstrap_mean(data)
+    best = ranked[0][0]
 
-    # -----------------------------------------------------
-    # ROLLING
-    # -----------------------------------------------------
+    second = (
+        ranked[1][0]
+        if len(ranked) > 1
+        else best
+    )
 
-    rolling = rolling_analysis(
+    lookup = {
+        name: (low, high)
+        for name, low, high
+        in BINS
+    }
+
+    low = lookup[best][0]
+    high = lookup[best][1]
+
+    if high == float("inf"):
+
+        high = max(
+            stats["p90"],
+            low * 2
+        )
+
+    if second != best:
+
+        low = min(
+            low,
+            lookup[second][0]
+        )
+
+        second_high = (
+            lookup[second][1]
+        )
+
+        if second_high != float("inf"):
+
+            high = max(
+                high,
+                second_high
+            )
+
+    # Haddan tashqari katta diapazonni
+    # p90 bilan cheklash
+    if stats["p90"] > low:
+
+        high = min(
+            high,
+            stats["p90"] * 1.25
+        )
+
+    if high <= low:
+
+        high = (
+            low + 0.50
+        )
+
+    central = (
+        low + high
+    ) / 2
+
+    agreement = (
+        votes[best]
+        /
+        max(
+            1,
+            sum(votes.values())
+        )
+        *
+        100
+    )
+
+    # Autocorrelation
+    autocorrelations = [
+        autocorrelation(
+            data,
+            lag
+        )
+        for lag in range(1, 6)
+    ]
+
+    max_ac = max(
+        abs(x)
+        for x in autocorrelations
+    )
+
+    # Backtest
+    backtest_result = (
+        backtest(
+            data,
+            100
+        )
+    )
+
+    # Confidence — bu
+    # model agreement,
+    # real probability emas
+    confidence = (
+        40
+        +
+        agreement * 0.70
+    )
+
+    if (
+        backtest_result
+        is not None
+        and backtest_result > 50
+    ):
+
+        confidence += 10
+
+    if max_ac > 0.15:
+
+        confidence += 5
+
+    if max_ac > 0.30:
+
+        confidence -= 10
+
+    confidence = max(
+        5,
+        min(
+            95,
+            confidence
+        )
+    )
+
+    transition = (
+        transition_analysis(
+            data
+        )
+    )
+
+    similarity = (
+        similarity_analysis(
+            data,
+            5
+        )
+    )
+
+    entropy_value = entropy(
         data
     )
 
-    # -----------------------------------------------------
-    # ISHONCH DARAJASI
-    # -----------------------------------------------------
-
-    score = 50.0
-
-    # Namuna kattaligi
-    if total >= 100:
-        score += 10
-
-    if total >= 500:
-        score += 10
-
-    if total >= 1000:
-        score += 10
-
-    # Kuchli autokorrelyatsiya bo'lsa
-    if abs(ac1) > 0.10:
-        score += 5
-
-    if abs(ac2) > 0.10:
-        score += 3
-
-    # Juda katta o'zgaruvchanlik
-    if cv > 100:
-        score -= 10
-
-    score = max(
-        0,
-        min(100, score)
+    run_value = runs_test(
+        data
     )
 
-    if score >= 75:
-        confidence = "YUQORI"
-    elif score >= 55:
-        confidence = "O‘RTA"
-    else:
-        confidence = "PAST"
-
-    # -----------------------------------------------------
-    # SIGNAL
-    # -----------------------------------------------------
-
-    signal_low = q1
-    signal_high = q3
-
-    # Juda ekstremal qiymatlarni signalga kiritmaslik
-    signal_low = max(
-        1.00,
-        round(signal_low, 2)
+    slope = trend_slope(
+        data
     )
 
-    signal_high = max(
-        signal_low,
-        round(signal_high, 2)
+    low_streak = streak(
+        data,
+        1.50,
+        True
     )
 
-    # -----------------------------------------------------
-    # MATN
-    # -----------------------------------------------------
+    high_streak = streak(
+        data,
+        5.00,
+        False
+    )
 
     text = (
-        "🔮 <b>CHUQUR STATISTIK TAHLIL</b>\n"
+        "🔮 <b>YAKUNIY CHUQUR "
+        "STATISTIK TAHLIL</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
 
-        f"📚 <b>To‘liq tarix:</b> {total:,} ta\n"
-        f"📈 <b>O‘rtacha:</b> {average:.2f}x\n"
-        f"📌 <b>Median:</b> {median:.2f}x\n"
-        f"📉 <b>Q1:</b> {q1:.2f}x\n"
-        f"📈 <b>Q3:</b> {q3:.2f}x\n"
-        f"📊 <b>P10:</b> {p10:.2f}x\n"
-        f"📊 <b>P90:</b> {p90:.2f}x\n"
-        f"📐 <b>Standart og‘ish:</b> {std:.2f}\n"
-        f"📊 <b>O‘zgaruvchanlik:</b> {cv:.1f}%\n\n"
+        f"📚 Tarix: "
+        f"<b>{total:,}</b> ta\n"
 
-        "🎯 <b>ASOSIY STATISTIK DIAPAZON</b>\n"
-        f"<b>{signal_low:.2f}x — {signal_high:.2f}x</b>\n\n"
+        f"📈 O‘rtacha: "
+        f"<b>{stats['average']:.2f}x</b>\n"
 
-        f"📍 Eng ko‘p uchragan diapazon:\n"
-        f"<b>{best_range}x</b> — "
-        f"<b>{best_percent:.2f}%</b>\n\n"
+        f"📌 Median: "
+        f"<b>{stats['median']:.2f}x</b>\n"
 
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "🔁 <b>KETMA-KETLIK TAHLILI</b>\n\n"
+        f"📊 P10: "
+        f"<b>{stats['p10']:.2f}x</b>\n"
 
-        f"🔻 Hozirgi <1.50x streak: "
-        f"<b>{low_streak}</b>\n"
+        f"📊 P90: "
+        f"<b>{stats['p90']:.2f}x</b>\n"
 
-        f"🔺 Hozirgi ≥5.00x streak: "
-        f"<b>{high_streak}</b>\n\n"
+        f"📐 Standart og‘ish: "
+        f"<b>{stats['std']:.2f}</b>\n\n"
 
-        f"🔗 Autokorrelyatsiya L1: "
-        f"<b>{ac1:.4f}</b>\n"
+        "🎯 <b>UMUMIY TAXMINIY "
+        "DIAPAZON</b>\n"
 
-        f"🔗 Autokorrelyatsiya L2: "
-        f"<b>{ac2:.4f}</b>\n"
+        f"<b>{low:.2f}x — "
+        f"{high:.2f}x</b>\n\n"
 
-        f"🔗 Autokorrelyatsiya L3: "
-        f"<b>{ac3:.4f}</b>\n\n"
+        f"⭐ Markaziy qiymat: "
+        f"<b>{central:.2f}x</b>\n\n"
 
-        f"🧮 Entropiya: <b>{ent:.3f}</b>\n"
-        f"🧪 Chi-square ko‘rsatkichi: "
-        f"<b>{chi:.2f}</b>\n"
+        f"🧠 Model kelishuvi: "
+        f"<b>{agreement:.1f}%</b>\n"
 
-        f"📈 Trend slope: <b>{slope:.5f}</b>\n\n"
+        f"🎯 Model ishonchliligi: "
+        f"<b>{confidence:.0f}/100</b>\n"
     )
 
-    # -----------------------------------------------------
-    # TRANSITION
-    # -----------------------------------------------------
+    if backtest_result is not None:
+
+        text += (
+            f"📈 Walk-forward backtest: "
+            f"<b>{backtest_result:.1f}%</b>\n"
+        )
+
+    text += (
+        "\n🔬 <b>CHUQUR DIAGNOSTIKA</b>\n"
+
+        f"🔗 Max AC(L1-L5): "
+        f"<b>{max_ac:.4f}</b>\n"
+
+        f"🧮 Entropiya: "
+        f"<b>{entropy_value:.3f}</b>\n"
+
+        f"📈 Trend: "
+        f"<b>{slope:.5f}</b>\n"
+
+        f"🔻 <1.50x streak: "
+        f"<b>{low_streak}</b>\n"
+
+        f"🔺 5x+ streak: "
+        f"<b>{high_streak}</b>\n"
+    )
+
+    if run_value is not None:
+
+        text += (
+            f"🧪 Runs-test Z: "
+            f"<b>{run_value:.3f}</b>\n"
+        )
 
     if transition:
 
@@ -827,62 +1074,46 @@ def make_predict():
         )
 
         text += (
-            "🔄 <b>OLDINGI DIAPAZONDAN KEYINGI NATIJALAR</b>\n\n"
-            f"Hozirgi diapazon: <b>{current}x</b>\n"
-            f"Eng ko‘p kuzatilgan keyingi diapazon: "
+            "\n🔄 <b>TRANSITION</b>\n"
+            f"{current}x → "
             f"<b>{next_range}x</b>\n"
-            f"Tarixiy ulushi: <b>{percent:.2f}%</b>\n"
-            f"Namuna: <b>{count} ta</b>\n\n"
+            f"Tarixiy ulush: "
+            f"<b>{percent:.1f}%</b>\n"
+            f"Namuna: <b>{count}</b> ta\n"
         )
 
-    # -----------------------------------------------------
-    # BOOTSTRAP
-    # -----------------------------------------------------
+    if similarity:
 
-    if bootstrap:
-
-        b_low, b_high = bootstrap
+        name, percent, count = (
+            similarity
+        )
 
         text += (
-            "🧪 <b>BOOTSTRAP TAHLILI</b>\n\n"
-            f"O‘rtacha uchun taxminiy 95% interval:\n"
-            f"<b>{b_low:.2f}x — {b_high:.2f}x</b>\n\n"
+            "\n🔎 <b>O‘XSHASH PATTERN</b>\n"
+            f"Topilgan: <b>{count}</b> ta\n"
+            f"Eng ko‘p keyingi diapazon: "
+            f"<b>{name}x</b>\n"
+            f"Ulushi: <b>{percent:.1f}%</b>\n"
         )
 
-    # -----------------------------------------------------
-    # ROLLING
-    # -----------------------------------------------------
-
     text += (
-        "📊 <b>ROLLING TAHLIL</b>\n\n"
-        f"{rolling}\n\n"
-    )
+        "\n━━━━━━━━━━━━━━━━━━━━\n"
+        "📌 <b>YAKUNIY SIGNAL:</b>\n"
+        f"<b>{low:.2f}x — "
+        f"{high:.2f}x</b>\n\n"
 
-    # -----------------------------------------------------
-    # ISHONCH
-    # -----------------------------------------------------
-
-    text += (
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 <b>STATISTIK SIGNAL:</b>\n"
-        f"<b>{signal_low:.2f}x — {signal_high:.2f}x</b>\n\n"
-
-        f"🧠 <b>Statistik ishonchlilik:</b> "
-        f"<b>{confidence}</b>\n"
-        f"📊 Hisoblangan ball: <b>{score:.0f}/100</b>\n\n"
-
-        "⚠️ <b>MUHIM:</b>\n"
-        "Bu tarixiy statistik tahlil. "
-        "Agar raundlar mustaqil tasodifiy RNG orqali "
-        "yaratilsa, tarix keyingi raundni kafolatli "
-        "bashorat qila olmaydi."
+        "⚠️ Bu tarixiy statistik model.\n"
+        "Agar o‘yin mustaqil kriptografik "
+        "RNG ishlatsa, oldingi tarixdan "
+        "keyingi raundni aniq bilib "
+        "bo‘lmaydi."
     )
 
     return text
 
 
 # =========================================================
-# ODDIY STATISTIKA
+# STAT
 # =========================================================
 
 def make_stat():
@@ -890,55 +1121,61 @@ def make_stat():
     with lock:
         data = list(results)
 
-    total = len(data)
-
-    if total == 0:
+    if not data:
 
         return (
-            "📊 Hozircha hech qanday natija yo‘q."
+            "📊 Hozircha natijalar yo‘q."
         )
 
-    stats = calculate_stats(data)
+    stats = calculate_stats(
+        data
+    )
+
+    counter = counts(
+        data
+    )
 
     text = (
         "📊 <b>AVIATOR STATISTIKASI</b>\n\n"
-        f"Jami raundlar: <b>{total:,}</b>\n"
-        f"O‘rtacha: <b>{stats['average']:.2f}x</b>\n"
-        f"Median: <b>{stats['median']:.2f}x</b>\n"
-        f"Minimum: <b>{stats['minimum']:.2f}x</b>\n"
-        f"Maksimum: <b>{stats['maximum']:.2f}x</b>\n\n"
 
-        "📊 <b>Barcha tarix:</b>\n"
-        f"{distribution_text(data)}\n\n"
+        f"📚 Jami: "
+        f"<b>{len(data):,}</b> ta\n"
+
+        f"📈 O‘rtacha: "
+        f"<b>{stats['average']:.2f}x</b>\n"
+
+        f"📌 Median: "
+        f"<b>{stats['median']:.2f}x</b>\n"
+
+        f"⬇️ Minimum: "
+        f"<b>{stats['minimum']:.2f}x</b>\n"
+
+        f"⬆️ Maksimum: "
+        f"<b>{stats['maximum']:.2f}x</b>\n\n"
+
+        "📊 <b>DIAPAZONLAR</b>\n"
     )
 
-    windows = [
-        10,
-        20,
-        50,
-        100,
-        500,
-        1000
-    ]
+    for name, _, _ in BINS:
 
-    for window in windows:
+        count = counter.get(
+            name,
+            0
+        )
 
-        if total >= window:
+        percent = (
+            count
+            /
+            len(data)
+            *
+            100
+        )
 
-            part = data[-window:]
-
-            avg = sum(part) / len(part)
-
-            text += (
-                f"\n🔹 Oxirgi {window} raund: "
-                f"<b>{avg:.2f}x</b>\n"
-                f"{distribution_text(part)}\n"
-            )
-
-    text += (
-        "\n⚠️ Bu tarixiy statistika. "
-        "Keyingi natijani kafolatlamaydi."
-    )
+        text += (
+            f"{name}x: "
+            f"<b>{percent:.1f}%</b> "
+            f"({count} ta)\n"
+        )
 
     return text
 
@@ -957,42 +1194,11 @@ def add_results(numbers):
 
             try:
 
-                value = float(number)
+                value = float(
+                    number.replace(
+                        ",",
+                        "."
+                    )
+                )
 
-                if value >= 1.00:
-
-                    results.append(value)
-
-                    added += 1
-
-            except Exception:
-                pass
-
-        if added > 0:
-            save_results()
-
-    return added
-
-
-# =========================================================
-# CLEAR
-# =========================================================
-
-def clear_results():
-
-    global results
-
-    with lock:
-
-        results = []
-
-        save_results()
-
-    return True
-
-
-# =========================================================
-# HELP
-# =========================================================
-
-def hel
+   
