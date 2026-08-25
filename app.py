@@ -1195,10 +1195,21 @@ def add_results(numbers):
             try:
 
                 value = float(
-                    number.replace(
-                        ",",
-                        "."
-                    )
+                    str(number)
+                    .replace(",", ".")
+                    .strip()
                 )
 
-   
+                if value >= 1.00:
+
+                    results.append(value)
+
+                    added += 1
+
+            except (ValueError, TypeError):
+                continue
+
+        if added > 0:
+            save_results()
+
+    return added
