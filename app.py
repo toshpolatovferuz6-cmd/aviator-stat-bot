@@ -1,4 +1,9 @@
-import os, json, time, threading, urllib.request, urllib.parse
+import os
+import json
+import time
+import threading
+import urllib.request
+import urllib.parse
 from collections import Counter, defaultdict
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import math
@@ -18,11 +23,6 @@ DATA_FILE = os.environ.get("DATA_FILE", "results.json")
 results = []
 lock = threading.Lock()
 
-
-# =========================================================
-# DIAPAZONLAR
-# =========================================================
-
 BINS = [
     ("1.00-1.19", 1.00, 1.20),
     ("1.20-1.49", 1.20, 1.50),
@@ -39,10 +39,6 @@ BINS = [
 ]
 
 
-# =========================================================
-# SAQLASH
-# =========================================================
-
 def load_results():
     global results
 
@@ -56,18 +52,17 @@ def load_results():
             try:
                 value = float(x)
 
-                if value >= 1.00:
+                if value >= 1.00 and math.isfinite(value):
                     results.append(value)
 
-            except Exception:
-                pass
+            except (ValueError, TypeError):
+                continue
 
         print("Tarix yuklandi:", len(results))
 
-    except Exception:
+    except Exception as e:
         results = []
-
-        print("Yangi tarix yaratildi.")
+        print("Yangi tarix yaratildi:", e)
 
 
 def save_results():
@@ -198,6 +193,11 @@ def percentile(
         return 0.0
 
     values = sorted(data)
+
+    p = max(
+        0.0,
+        min(1.0, p)
+    )
 
     position = (
         len(values) - 1
@@ -411,7 +411,7 @@ def transition_analysis(data):
 
 
 # =========================================================
-# O‘XSHASH PATTERN
+# O'XSHASH PATTERN
 # =========================================================
 
 def similarity_analysis(
@@ -720,7 +720,6 @@ def model_votes(data):
 
     votes = Counter()
 
-    # 1. Umumiy tarix
     overall = distribution(
         data
     )
@@ -731,7 +730,6 @@ def model_votes(data):
 
         votes[name] += percent
 
-    # 2. Yaqin tarixga vazn
     windows = [
         (25, 2.5),
         (50, 2.0),
@@ -762,7 +760,6 @@ def model_votes(data):
                 weight
             )
 
-    # 3. Transition
     transition = (
         transition_analysis(data)
     )
@@ -777,7 +774,6 @@ def model_votes(data):
             percent * 2
         )
 
-    # 4. Similarity
     similarity = (
         similarity_analysis(
             data,
@@ -799,7 +795,7 @@ def model_votes(data):
 
 
 # =========================================================
-# YAKUNIY PREDICT
+# PREDICT
 # =========================================================
 
 def make_predict():
@@ -845,8 +841,7 @@ def make_predict():
         in BINS
     }
 
-    low = lookup[best][0]
-    high = lookup[best][1]
+    low, high = lookup[best]
 
     if high == float("inf"):
 
@@ -873,8 +868,6 @@ def make_predict():
                 second_high
             )
 
-    # Haddan tashqari katta diapazonni
-    # p90 bilan cheklash
     if stats["p90"] > low:
 
         high = min(
@@ -903,7 +896,6 @@ def make_predict():
         100
     )
 
-    # Autocorrelation
     autocorrelations = [
         autocorrelation(
             data,
@@ -917,7 +909,6 @@ def make_predict():
         for x in autocorrelations
     )
 
-    # Backtest
     backtest_result = (
         backtest(
             data,
@@ -925,9 +916,6 @@ def make_predict():
         )
     )
 
-    # Confidence — bu
-    # model agreement,
-    # real probability emas
     confidence = (
         40
         +
@@ -1075,8 +1063,8 @@ def make_predict():
 
         text += (
             "\n🔄 <b>TRANSITION</b>\n"
-            f"{current}x → "
-            f"<b>{next_range}x</b>\n"
+            f"{current} → "
+            f"<b>{next_range}</b>\n"
             f"Tarixiy ulush: "
             f"<b>{percent:.1f}%</b>\n"
             f"Namuna: <b>{count}</b> ta\n"
@@ -1092,7 +1080,7 @@ def make_predict():
             "\n🔎 <b>O‘XSHASH PATTERN</b>\n"
             f"Topilgan: <b>{count}</b> ta\n"
             f"Eng ko‘p keyingi diapazon: "
-            f"<b>{name}x</b>\n"
+            f"<b>{name}</b>\n"
             f"Ulushi: <b>{percent:.1f}%</b>\n"
         )
 
@@ -1102,7 +1090,7 @@ def make_predict():
         f"<b>{low:.2f}x — "
         f"{high:.2f}x</b>\n\n"
 
-        "⚠️ Bu tarixiy statistik model.\n"
+        "⚠️ Bu tarixiy statistik model. "
         "Agar o‘yin mustaqil kriptografik "
         "RNG ishlatsa, oldingi tarixdan "
         "keyingi raundni aniq bilib "
@@ -1197,19 +1185,29 @@ def add_results(numbers):
                 value = float(
                     str(number)
                     .replace(",", ".")
+                    .replace("x", "")
                     .strip()
                 )
 
-                if value >= 1.00:
+                if (
+                    value >= 1.00
+                    and math.isfinite(value)
+                ):
 
-                    results.append(value)
+                    results.append(
+                        value
+                    )
 
                     added += 1
 
-            except (ValueError, TypeError):
+            except (
+                ValueError,
+                TypeError
+            ):
+
                 continue
 
         if added > 0:
             save_results()
 
-    return added
+    return added 
